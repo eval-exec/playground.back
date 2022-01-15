@@ -1,0 +1,4 @@
+.idea/
+flashswap/node_modules/
+flashswap/package.json
+flashswap/yarn.lock
