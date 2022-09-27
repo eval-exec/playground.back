@@ -8,3 +8,8 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.22"
 plotters = "0.3.4"
+ckb-db = "0.104.1"
+ckb-db-schema = "0.104.1"
+ckb-store = "0.104.1"
+ckb-util = "0.104.1"
+scan_fmt = "0.2.6"

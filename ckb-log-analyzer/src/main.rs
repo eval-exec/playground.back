@@ -1,11 +1,32 @@
-use chrono::NaiveDateTime;
-use plotters::drawing::DrawingAreaErrorKind::LayoutError;
 use plotters::prelude::*;
 use std::fs::File;
 use std::io::BufRead;
-use std::ops::Deref;
+use ckb_db::RocksDB;
+use ckb_db_schema::{COLUMNS};
+use ckb_store::{ChainStore, ChainDB};
+use scan_fmt::scan_fmt;
+
 
 fn main() {
+    draw_time_cost()
+}
+
+fn export_block_size() {
+    let ckb_mainnet_dir = "/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-main/data/db";
+    let db = RocksDB::open_in(&ckb_mainnet_dir, COLUMNS);
+    let store = ChainDB::new(db, Default::default());
+
+    let txn = store.begin_transaction();
+    let latest_ext = store.get_current_epoch_ext().unwrap().number();
+    for number in 0..8162480 {
+        let block_hash = store.get_block_hash(number).unwrap();
+        let epoch_number = store.get_block_epoch(&block_hash).unwrap().number();
+        let packed_block_size = store.get_packed_block(&block_hash).unwrap().total_size();
+        println!("{},{},{}", epoch_number, number, packed_block_size)
+    }
+}
+
+fn draw_time_cost() {
     // read first arguments
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -29,15 +50,30 @@ fn main() {
     let mut max_time_diff: chrono::Duration = chrono::Duration::seconds(0);
     let mut time_diffs: Vec<u64> = vec![0; 100];
 
-    let mut points = Vec::new();
+    // let mut _points = Vec::new();
     for text in reader.lines() {
         let text = text.unwrap();
+
+
         if text.contains(" INFO ckb_chain::chain  block: ")
             && text.contains("hash: 0x")
             && text.contains(", epoch: ")
             && text.contains(", total_diff: 0x")
             && text.contains(", txs: ")
         {
+            let start_i = text.find("INFO ckb_chain::chain  block: ").unwrap();
+            let (block_number, hash, epoch, _, _, total_difficulty, txs_count) = scan_fmt!(&text[start_i..] ,  // input string
+                            "INFO ckb_chain::chain  block: {}, hash: {}, epoch: {}({}/{}), total_diff: {x}, txs: {}",     // format
+           u64,
+                String,
+                u64,
+                u64,
+                u64,
+               String,
+                u64
+            ).unwrap();
+
+
             let time_str = &text[7..30].to_string();
             // parse time from string
             let time = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%d %H:%M:%S%.f")
@@ -50,9 +86,11 @@ fn main() {
             let height_str = &text[96..comma_pos];
             let height = height_str.parse::<u64>().unwrap();
 
-            if height % 100 != 0 {
-                continue;
-            }
+            println!("{},{},{}", time.timestamp(), height, txs_count);
+
+            // if height % 100 != 0 {
+            //     continue;
+            // }
 
             // if previous_time.is_none() {
             //     previous_time = Some(time);
@@ -72,11 +110,11 @@ fn main() {
             //
             // previous_time = Some(time);
 
-            points.push((time.timestamp() as u64, height));
+            // points.push((time.timestamp() as u64, height));
         }
     }
 
-    draw(&points).unwrap()
+    // draw(&points).unwrap()
 }
 
 fn draw(points: &[(u64, u64)]) -> Result<(), Box<dyn std::error::Error>> {
