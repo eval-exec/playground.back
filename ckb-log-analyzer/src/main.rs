@@ -15,6 +15,7 @@ struct HeightStatus {
     time: u64,
     epoch: u64,
     block_size: u64,
+    tx_count: u64,
 }
 
 fn main() {
@@ -38,9 +39,13 @@ fn draw_height_block_size() {
                 time: timestamp,
                 epoch: 0,
                 block_size: 0,
+                tx_count: txs_count,
             };
             // insert to mm
-            m1.lock().unwrap().entry(height).and_modify(|v| v.time = timestamp).or_insert(status);
+            m1.lock().unwrap().entry(height).and_modify(|v| {
+                v.time = timestamp;
+                v.tx_count = txs_count;
+            }).or_insert(status);
         }
     });
 
@@ -54,7 +59,7 @@ fn draw_height_block_size() {
             m2.lock().unwrap().entry(height).and_modify(|e| {
                 e.epoch = epoch;
                 e.block_size = block_size
-            }).or_insert(HeightStatus { time: 0, epoch, block_size });
+            }).or_insert(HeightStatus { time: 0, epoch, block_size, tx_count: 0 });
         }
     });
     h1.join().unwrap();
@@ -75,16 +80,43 @@ fn draw_height_block_size() {
     //          "block_size",
     //     ).unwrap();
     // }
+    // {
+    //     let mut epoch_total_size = BTreeMap::<u64, (u64, u64)>::new();
+    //     mm.lock().unwrap().iter().for_each(|(h, status)| {
+    //         epoch_total_size.entry(status.epoch).and_modify(|v| {
+    //             v.0 = v.0 + status.block_size;
+    //             v.1 = v.1 + 1;
+    //         }
+    //         ).or_insert((0, 0));
+    //     });
+    //     let results: Vec<(u64, u64)> = epoch_total_size.iter().map(|v| {
+    //         if v.1.1 == 0 {
+    //             return (*v.0, 0);
+    //         }
+    //         (*v.0, v.1.0 / v.1.1)
+    //     }).collect();
+    //
+    //     let mut y_max = 0_u64;
+    //     for (_, v) in &results {
+    //         if *v > y_max {
+    //             y_max = *v;
+    //         }
+    //     }
+    //
+    //
+    //     draw("img/epoch_average_block_size.png", &results, "CKB Sync Status: (epoch, average block_size)", y_max, "epoch", "average_block_size").unwrap();
+    // }
+
     {
-        let mut epoch_total_size = BTreeMap::<u64, (u64, u64)>::new();
+        let mut txs_total_count = BTreeMap::<u64, (u64, u64)>::new();
         mm.lock().unwrap().iter().for_each(|(h, status)| {
-            epoch_total_size.entry(status.epoch).and_modify(|v| {
-                v.0 = v.0 + status.block_size;
+            txs_total_count.entry(status.epoch).and_modify(|v| {
+                v.0 = v.0 + status.tx_count;
                 v.1 = v.1 + 1;
             }
             ).or_insert((0, 0));
         });
-        let results: Vec<(u64, u64)> = epoch_total_size.iter().map(|v| {
+        let results: Vec<(u64, u64)> = txs_total_count.iter().map(|v| {
             if v.1.1 == 0 {
                 return (*v.0, 0);
             }
@@ -99,8 +131,23 @@ fn draw_height_block_size() {
         }
 
 
-        draw("img/epoch_average_block_size.png", &results, "CKB Sync Status: (epoch, average block_size)", y_max, "epoch", "average_block_size").unwrap();
+        draw("img/epoch_average_txs_count.png", &results, "CKB Sync Status: (epoch, average txs_count)", y_max, "epoch", "average_txs_count").unwrap();
     }
+    // {
+    //     let results: Vec<(u64, u64)> = mm.lock().unwrap().iter().map(|(height, status)| {
+    //         (*height, status.tx_count)
+    //     }).collect();
+    //
+    //     let mut y_max = 0_u64;
+    //     for (_, v) in &results {
+    //         if *v > y_max {
+    //             y_max = *v;
+    //         }
+    //     }
+    //
+    //
+    //     draw("img/height_txs_count.png", &results, "CKB Sync Status: (height, txs_count)", y_max, "height", "txs_count").unwrap();
+    // }
 }
 
 
