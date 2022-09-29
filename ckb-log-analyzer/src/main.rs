@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::collections::{BTreeMap, HashMap};
 use plotters::prelude::*;
 use std::fs::File;
@@ -8,6 +9,8 @@ use std::thread;
 use ckb_db::RocksDB;
 use ckb_db_schema::{COLUMNS};
 use ckb_store::{ChainStore, ChainDB};
+use itertools::Itertools;
+use plotters::coord::types::{RangedCoordf64, RangedCoordu64};
 use scan_fmt::scan_fmt;
 
 
@@ -19,8 +22,13 @@ struct HeightStatus {
 }
 
 fn main() {
-    draw_height_block_size()
+    let mm = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-run_change-cpu-turbo-state.log");
+    // draw_height_block_size()
     // draw_time_cost()
+
+    // draw_height_cycles(&mm);
+    let epoch_mm = height_to_epoch(&mm);
+    draw_epoch_cycles(&epoch_mm);
 }
 
 fn draw_height_block_size() {
@@ -131,7 +139,7 @@ fn draw_height_block_size() {
         }
 
 
-        draw("img/epoch_average_txs_count.png", &results, "CKB Sync Status: (epoch, average txs_count)", y_max, "epoch", "average_txs_count").unwrap();
+        draw_u64("img/epoch_average_txs_count.png", &results, "CKB Sync Status: (epoch, average txs_count)",y_max, "epoch", "average_txs_count").unwrap();
     }
     // {
     //     let results: Vec<(u64, u64)> = mm.lock().unwrap().iter().map(|(height, status)| {
@@ -164,6 +172,126 @@ fn export_block_size() {
         let packed_block_size = store.get_packed_block(&block_hash).unwrap().total_size();
         println!("{},{},{}", epoch_number, number, packed_block_size)
     }
+}
+
+struct LogStatics {
+    cycles: u64,
+    epoch: u64,
+    tx_count: u64,
+    timestamp: u64,
+}
+
+struct EpochStatics {
+    cycles: f64,
+    tx_count: f64,
+}
+
+fn draw_epoch_cycles(mm: &BTreeMap<u64, EpochStatics>) {
+    let result: Vec<(f64, f64)> = mm.iter().map(|(k, v)| {
+        (*k as f64, v.cycles)
+    }).collect();
+    let mut y_max = 0_f64;
+    for (_, v) in &result {
+        if *v > y_max {
+            y_max = *v;
+        }
+    }
+    draw_f64("img/epoch_average_cycles.png", &result, "CKB Sync Status:(epoch,average_cycles)", y_max, "epoch", "average cycles").unwrap();
+}
+
+fn draw_height_cycles(mm: &BTreeMap<u64, LogStatics>) {
+    let result: Vec<(u64, u64)> = mm.iter().map(|(k, v)| {
+        (*k, v.cycles)
+    }).collect();
+    let mut y_max = 0_u64;
+    for (_, v) in &result {
+        if *v > y_max {
+            y_max = *v;
+        }
+    }
+    draw_u64("img/height_cycles.png", &result, "CKB Sync Status:(height,cycles)", y_max, "height", "cycles").unwrap();
+}
+
+fn height_to_epoch(m: &BTreeMap<u64, LogStatics>) -> BTreeMap<u64, EpochStatics> {
+    let mut ret = BTreeMap::<u64, EpochStatics>::new();
+    for (key, value) in &m.values().group_by(|v| v.epoch) {
+        let vs: Vec<(u64,u64)> = value.map(|v| (v.cycles,v.tx_count)).collect();
+        let average_cycles = vs.iter().map(|v| v.0).sum::<u64>() as f64 / vs.len() as f64;
+        let average_tx_count= vs.iter().map(|v| v.1).sum::<u64>() as f64 / vs.len() as f64;
+        ret.insert(key, EpochStatics { cycles: average_cycles, tx_count: average_tx_count });
+    }
+    ret
+}
+
+fn parse_info_level_log(log_file: &str) -> BTreeMap<u64, LogStatics> {
+    let file = File::open(log_file).expect("file not found");
+
+    // read file line by line
+    let reader = std::io::BufReader::new(file);
+
+    let mut log_statics = BTreeMap::<u64, LogStatics>::new();
+
+    for text in reader.lines() {
+        let text = text.unwrap();
+        if text.contains("[block_verifier]") {
+            let start_i = text.find("[block_verifier]").unwrap();
+            let (block_number, hash, _, _, cycles, max_cycles) = scan_fmt!(&text[start_i..] ,  // input string
+                            "[block_verifier] block number: {}, hash: Byte32({}), size:{}/{}, cycles: {}/{}",     // format
+           u64,
+                String,
+                u64,
+                u64,
+                u64,
+                u64
+            ).unwrap();
+            log_statics.entry(block_number).and_modify(|v| {
+                v.cycles = cycles
+            }).or_insert(LogStatics {
+                cycles,
+                epoch: 0,
+                tx_count: 0,
+                timestamp: 0,
+            });
+        } else if text.contains(" INFO ckb_chain::chain  block: ")
+            && text.contains("hash: 0x")
+            && text.contains(", epoch: ")
+            && text.contains(", total_diff: 0x")
+            && text.contains(", txs: ")
+        {
+            let start_i = text.find("INFO ckb_chain::chain  block: ").unwrap();
+            let (block_number, hash, epoch, _, _, total_difficulty, txs_count) = scan_fmt!(&text[start_i..] ,  // input string
+                            "INFO ckb_chain::chain  block: {}, hash: {}, epoch: {}({}/{}), total_diff: {x}, txs: {}",     // format
+           u64,
+                String,
+                u64,
+                u64,
+                u64,
+               String,
+                u64
+            ).unwrap();
+
+
+            let time_str = &text[7..30].to_string();
+            // parse time from string
+            let time = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%d %H:%M:%S%.f")
+                .unwrap_or_else(|v| {
+                    panic!("parse time error: {}, text: {}", v, text);
+                });
+
+            // find first , position in text
+            log_statics.entry(block_number).and_modify(|v| {
+                v.timestamp = time.timestamp() as u64;
+                v.epoch = epoch;
+                v.tx_count = txs_count;
+            }).or_insert(LogStatics {
+                cycles: 0,
+                epoch,
+                tx_count: txs_count,
+                timestamp: time.timestamp() as u64,
+            });
+        }
+    }
+    log_statics
 }
 
 fn draw_time_cost() {
@@ -250,16 +378,14 @@ fn draw_time_cost() {
         }
     }
 
-    draw("img/time_height.png", &points, "CKB Sync Status:(timestamp, height)", points.last().unwrap().1, "timestamp", "height").unwrap()
+    draw_u64("img/time_height.png", &points, "CKB Sync Status:(timestamp, height)", points.last().unwrap().1, "timestamp", "height").unwrap()
 }
 
-fn draw(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64, x_description: &str, y_description: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn draw_u64(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64, x_description: &str, y_description: &str) -> Result<(), Box<dyn std::error::Error>> {
     let root = BitMapBackend::new(filename, (1280, 720)).into_drawing_area();
 
     root.fill(&WHITE)?;
     root.margin(10, 10, 10, 10);
-
-    // get second item of last of points
 
     let mut chart = ChartBuilder::on(&root)
         .caption(chart_name, ("sans-serif", 50).into_font())
@@ -267,7 +393,7 @@ fn draw(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64, x_d
         .y_label_area_size(50)
         .build_cartesian_2d(
             points.first().unwrap().0..points.last().unwrap().0,
-            0_u64..y_max,
+            0..y_max
         )?;
     chart
         .configure_series_labels()
@@ -285,7 +411,42 @@ fn draw(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64, x_d
         &RED,
         &|c, s, st| {
             EmptyElement::at(c) + Circle::new((0, 0), s, st.filled())
-            // + Text::new(format!("{:?}", c), (10, 0), ("sans-serif", 10).into_font());
+// + Text::new(format!("{:?}", c), (10, 0), ("sans-serif", 10).into_font());
+        },
+    ))?;
+    Ok(())
+}
+fn draw_f64(filename: &str, points: &[(f64, f64)], chart_name: &str, y_max: f64, x_description: &str, y_description: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new(filename, (1280, 720)).into_drawing_area();
+
+    root.fill(&WHITE)?;
+    root.margin(10, 10, 10, 10);
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption(chart_name, ("sans-serif", 50).into_font())
+        .x_label_area_size(50)
+        .y_label_area_size(50)
+        .build_cartesian_2d(
+            points.first().unwrap().0..points.last().unwrap().0,
+            0.0..y_max,
+        )?;
+    chart
+        .configure_series_labels()
+        .border_style(&BLACK)
+        .background_style(&WHITE.mix(0.8))
+        .draw()?;
+
+    chart.configure_mesh()
+        .x_desc(x_description)
+        .y_desc(y_description)
+        .draw().unwrap();
+    chart.draw_series(PointSeries::of_element(
+        points.iter().map(|v| (v.0, v.1)),
+        1,
+        &RED,
+        &|c, s, st| {
+            EmptyElement::at(c) + Circle::new((0, 0), s, st.filled())
+// + Text::new(format!("{:?}", c), (10, 0), ("sans-serif", 10).into_font());
         },
     ))?;
     Ok(())

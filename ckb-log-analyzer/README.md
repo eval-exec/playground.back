@@ -9,3 +9,7 @@
 ![inline](img/epoch_average_txs_count.png)
 ## height and txs count on sync progress
 ![inline](img/height_txs_count.png)
+## epoch and average cycles on sync progress
+![inline](img/epoch_average_cycles.png)
+## height and cycles on sync progress
+![inline](img/height_cycles.png)
