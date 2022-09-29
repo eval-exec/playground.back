@@ -26,7 +26,7 @@ fn main() {
     // draw_height_block_size()
     // draw_time_cost()
 
-    // draw_height_cycles(&mm);
+    draw_height_cycles(&mm);
     let epoch_mm = height_to_epoch(&mm);
     draw_epoch_cycles(&epoch_mm);
 }
@@ -385,12 +385,12 @@ fn draw_u64(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64,
     let root = BitMapBackend::new(filename, (1280, 720)).into_drawing_area();
 
     root.fill(&WHITE)?;
-    root.margin(10, 10, 10, 10);
+    root.margin(10, 10, 20, 10);
 
     let mut chart = ChartBuilder::on(&root)
         .caption(chart_name, ("sans-serif", 50).into_font())
         .x_label_area_size(50)
-        .y_label_area_size(50)
+        .y_label_area_size(100)
         .build_cartesian_2d(
             points.first().unwrap().0..points.last().unwrap().0,
             0..y_max
@@ -420,12 +420,12 @@ fn draw_f64(filename: &str, points: &[(f64, f64)], chart_name: &str, y_max: f64,
     let root = BitMapBackend::new(filename, (1280, 720)).into_drawing_area();
 
     root.fill(&WHITE)?;
-    root.margin(10, 10, 10, 10);
+    root.margin(10, 10, 20, 10);
 
     let mut chart = ChartBuilder::on(&root)
         .caption(chart_name, ("sans-serif", 50).into_font())
         .x_label_area_size(50)
-        .y_label_area_size(50)
+        .y_label_area_size(100)
         .build_cartesian_2d(
             points.first().unwrap().0..points.last().unwrap().0,
             0.0..y_max,
