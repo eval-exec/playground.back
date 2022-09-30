@@ -1,51 +1,159 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap};
 use plotters::prelude::*;
 use std::fs::File;
 use std::io::BufRead;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::thread;
+use std::time::Instant;
 use ckb_db::RocksDB;
 use ckb_db_schema::{COLUMNS};
 use ckb_store::{ChainStore, ChainDB};
-use itertools::Itertools;
+use itertools::{Itertools};
 use scan_fmt::scan_fmt;
 
+use log::info;
+use serde::{Deserialize, Serialize};
 
-fn main() {
-    let mut mm0 = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-run_change-cpu-turbo-state.log");
-    let mut mm1 = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-yamux-1M/data/logs/run.log");
+// fn save_context(c: &Context) {
+//     // serialize c to file
+//     let file = File::create("memo.cbor").unwrap();
+//     serde_cbor::to_writer(file, c).unwrap();
+// }
+
+// fn load_context(now: &Instant) -> Context {
+//     // deserialize from file
+//     match File::open("memo.cbor") {
+//         Ok(file) => {
+//             let c = serde_cbor::from_reader(file).unwrap();
+//             c
+//         }
+//         Err(_) => {
+//             let c = build_context(now);
+//             save_context(&c);
+//             c
+//         }
+//     }
+// }
+
+fn build_context(now: &Instant) -> Context {
+    let p0 = thread::spawn(|| {
+        let mm0 = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-main/data/logs/run.log");
+        mm0
+    });
+    let p1 = thread::spawn(|| {
+        {
+            let mm1 = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-yamux-1M/data/logs/run.log");
+            mm1
+        }
+    });
+
+
+
+    let mut mm0 = RefCell::new(p0.join().unwrap());
+    info!("parse ckb log {:?}", now.elapsed());
+    let mut mm1 = RefCell::new(p1.join().unwrap());
+    info!("parse ckb yamux log {:?}", now.elapsed());
+
     let block_size_mm = export_block_size();
+
+    info!("export block size {:?}", now.elapsed());
     // fill block_size_mm to mm
     for (height, block_size) in block_size_mm {
-        mm0.entry(height).and_modify(|v| v.block_size = block_size);
-        mm1.entry(height).and_modify(|v| v.block_size = block_size);
+        mm0.get_mut().entry(height).and_modify(|v| v.block_size = block_size);
+        mm1.get_mut().entry(height).and_modify(|v| v.block_size = block_size);
     }
 
-    let epoch_mm0 = height_to_epoch(&mm0);
-    let epoch_mm1 = height_to_epoch(&mm1);
+    info!("fill block size {:?}", now.elapsed());
+
+    let _mm0 = mm0.clone();
+    let j0 = thread::spawn(|| {
+        let epoch_mm0 = height_to_epoch(&_mm0.into_inner());
+        epoch_mm0
+    });
+
+    let _mm1 = mm1.clone();
+    let j1 = thread::spawn(|| {
+        let epoch_mm1 = height_to_epoch(&_mm1.into_inner());
+        epoch_mm1
+    });
+    let epoch_mm0 = Arc::new(j0.join().unwrap());
+    info!("epoch mm0 {:?}", now.elapsed());
+    let epoch_mm1 = Arc::new(j1.join().unwrap());
+    info!("epoch mm1 {:?}", now.elapsed());
+
     let c = Context {
         epoch_mm0,
-        mm0,
+        mm0: Arc::new(mm0.into_inner()),
         epoch_mm1: Some(epoch_mm1),
-        mm1: Some(mm1),
+        mm1: Some(Arc::new(mm1.into_inner())),
     };
-    c.draw_time_cost();
-
-    c.draw_height_block_size();
-    c.draw_epoch_average_block_size();
-
-    c.draw_height_cycles();
-    c.draw_epoch_cycles();
-
-    c.draw_height_txs_count();
-    c.draw_epoch_average_txs_count();
+    c
 }
 
-struct Context {
+fn main() {
+    env_logger::init();
+    let now = Instant::now();
+    info!("start");
+    let c = build_context(&now);
+
+    c.draw_time_cost();
+    info!("draw time cost {:?}", now.elapsed());
+
+    c.draw_height_block_size();
+    info!("draw height block size {:?}", now.elapsed());
+    c.draw_epoch_average_block_size();
+    info!("draw epoch average block size {:?}", now.elapsed());
+
+    c.draw_height_cycles();
+    info!("draw height cycles {:?}", now.elapsed());
+    c.draw_epoch_cycles();
+    info!("draw epoch cycles {:?}", now.elapsed());
+
+    c.draw_height_txs_count();
+    info!("draw height txs count {:?}", now.elapsed());
+    c.draw_epoch_average_txs_count();
+    info!("draw epoch average txs count {:?}", now.elapsed());
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SContext {
     epoch_mm0: BTreeMap<u64, EpochStatics>,
     mm0: BTreeMap<u64, LogStatics>,
 
     epoch_mm1: Option<BTreeMap<u64, EpochStatics>>,
     mm1: Option<BTreeMap<u64, LogStatics>>,
+}
+
+// impl From<Context> for SContext {
+//     fn from(c: Context) -> Self {
+//         SContext {
+//             epoch_mm0: c.epoch_mm0,
+//             mm0: c.mm0,
+//             epoch_mm1: c.epoch_mm1,
+//             mm1: c.mm1,
+//         }
+//     }
+// }
+//
+// impl From<SContext> for Context {
+//     fn from(s: SContext) -> Self {
+//         Context {
+//             epoch_mm0: Arc::new(s.epoch_mm0),
+//             mm0: Arc::new(s.mm0),
+//             epoch_mm1: s.epoch_mm1.map(|mm| Arc::new(mm)),
+//             mm1: s.mm1.map(|mm| Arc::new(mm)),
+//         }
+//     }
+// }
+
+struct Context {
+    epoch_mm0: Arc<BTreeMap<u64, EpochStatics>>,
+    mm0: Arc<BTreeMap<u64, LogStatics>>,
+
+    epoch_mm1: Option<Arc<BTreeMap<u64, EpochStatics>>>,
+    mm1: Option<Arc<BTreeMap<u64, LogStatics>>>,
 }
 
 impl Context {
@@ -178,7 +286,7 @@ fn export_block_size() -> BTreeMap<u64, u64> {
     mm
 }
 
-#[derive(Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 struct LogStatics {
     cycles: u64,
     epoch: u64,
@@ -188,6 +296,7 @@ struct LogStatics {
     block_size: u64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 struct EpochStatics {
     block_count: u64,
     cycles: f64,
@@ -267,8 +376,9 @@ fn parse_info_level_log(log_file: &str) -> BTreeMap<u64, LogStatics> {
                 u64
             ).unwrap();
 
+            let time_start = text.find("2022-09").unwrap();
 
-            let time_str = &text[7..30].to_string();
+            let time_str = &text[time_start..23].to_string();
             // parse time from string
             let time = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%d %H:%M:%S%.f")
                 .unwrap_or_else(|v| {
