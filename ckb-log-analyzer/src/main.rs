@@ -1,224 +1,219 @@
-use std::any::TypeId;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap};
 use plotters::prelude::*;
 use std::fs::File;
 use std::io::BufRead;
-use std::ops::DerefMut;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::rc::Rc;
 use ckb_db::RocksDB;
 use ckb_db_schema::{COLUMNS};
 use ckb_store::{ChainStore, ChainDB};
 use itertools::Itertools;
-use plotters::coord::types::{RangedCoordf64, RangedCoordu64};
 use scan_fmt::scan_fmt;
 
 
-struct HeightStatus {
-    time: u64,
-    epoch: u64,
-    block_size: u64,
-    tx_count: u64,
-}
-
 fn main() {
-    let mm = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-run_change-cpu-turbo-state.log");
-    // draw_height_block_size()
-    // draw_time_cost()
+    let mut mm0 = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-run_change-cpu-turbo-state.log");
+    let mut mm1 = parse_info_level_log("/home/exec/Projects/github.com/nervosnetwork/ckb-yamux-1M/data/logs/run.log");
+    let block_size_mm = export_block_size();
+    // fill block_size_mm to mm
+    for (height, block_size) in block_size_mm {
+        mm0.entry(height).and_modify(|v| v.block_size = block_size);
+        mm1.entry(height).and_modify(|v| v.block_size = block_size);
+    }
 
-    draw_height_cycles(&mm);
-    let epoch_mm = height_to_epoch(&mm);
-    draw_epoch_cycles(&epoch_mm);
+    let epoch_mm0 = height_to_epoch(&mm0);
+    let epoch_mm1 = height_to_epoch(&mm1);
+    let c = Context {
+        epoch_mm0,
+        mm0,
+        epoch_mm1: Some(epoch_mm1),
+        mm1: Some(mm1),
+    };
+    c.draw_time_cost();
+
+    c.draw_height_block_size();
+    c.draw_epoch_average_block_size();
+
+    c.draw_height_cycles();
+    c.draw_epoch_cycles();
+
+    c.draw_height_txs_count();
+    c.draw_epoch_average_txs_count();
 }
 
-fn draw_height_block_size() {
-    let mm = Arc::new(Mutex::new(BTreeMap::<u64, HeightStatus>::new()));
+struct Context {
+    epoch_mm0: BTreeMap<u64, EpochStatics>,
+    mm0: BTreeMap<u64, LogStatics>,
 
-    let m1 = mm.clone();
-    let h1 = thread::spawn(move || {
-        let timestamp_height = File::open("timestamp_height_txs-count.log").expect("file not found");
-        let time_reader = std::io::BufReader::new(timestamp_height);
-        for text in time_reader.lines() {
-            let text = text.unwrap();
-            let (timestamp, height, txs_count) = scan_fmt!(&text, "{},{},{}", u64, u64, u64).unwrap();
+    epoch_mm1: Option<BTreeMap<u64, EpochStatics>>,
+    mm1: Option<BTreeMap<u64, LogStatics>>,
+}
 
-            // insert to mm
-            let status = HeightStatus {
-                time: timestamp,
-                epoch: 0,
-                block_size: 0,
-                tx_count: txs_count,
-            };
-            // insert to mm
-            m1.lock().unwrap().entry(height).and_modify(|v| {
-                v.time = timestamp;
-                v.tx_count = txs_count;
-            }).or_insert(status);
-        }
-    });
+impl Context {
+    fn draw_epoch_average_block_size(&self) {
+        let points: Vec<(f64, f64)> = self.epoch_mm0.iter().map(|(epoch, status)| {
+            (*epoch as f64, status.block_size as f64 / status.block_count as f64)
+        }).collect();
+        let points1: Option<Vec<(f64, f64)>> = self.epoch_mm1.as_ref().map(|m| m.iter().map(|(epoch, status)| {
+            (*epoch as f64, status.block_size as f64 / status.block_count as f64)
+        }).collect());
+        draw_f64("img/epoch_average_block_size.png",
+                 "CKB Sync Status: (epoch, average_block_size)",
+                 "epoch",
+                 "average_block_size",
+                 points,
+                 points1,
+        ).unwrap();
+    }
 
-    let m2 = mm.clone();
-    let h2 = thread::spawn(move || {
-        let epoch_size_file = File::open("epoch_number_block_size.log").expect("file not found");
-        let epoch_reader = std::io::BufReader::new(epoch_size_file);
-        for text in epoch_reader.lines() {
-            let text = text.unwrap();
-            let (epoch, height, block_size) = scan_fmt!(&text, "{},{},{}", u64, u64, u64).unwrap();
-            m2.lock().unwrap().entry(height).and_modify(|e| {
-                e.epoch = epoch;
-                e.block_size = block_size
-            }).or_insert(HeightStatus { time: 0, epoch, block_size, tx_count: 0 });
-        }
-    });
-    h1.join().unwrap();
-    h2.join().unwrap();
+    fn draw_height_block_size(&self) {
+        let points: Vec<(u64, u64)> = self.mm0.iter().map(|(height, status)| (*height, status.block_size)).collect();
+        let points1: Option<Vec<(u64, u64)>> = self.mm1.as_ref().map(|m| m.iter().map(|(height, status)| (*height, status.block_size)).collect());
 
-    //
-    // {
-    //     let mut ymax = 0_u64;
-    //     for (height, status) in mm.lock().unwrap().iter() {
-    //         if status.block_size > ymax {
-    //             ymax = status.block_size;
-    //         }
-    //     }
-    //     let time_block_size: Vec<(u64, u64)> =
-    //         mm.lock().unwrap().iter().map(|(height, status)| (*height, status.block_size)).collect();
-    //     draw("img/height_block_size.png", &time_block_size, "CKB Sync Status: (height, block_size)", ymax,
-    //          "height",
-    //          "block_size",
-    //     ).unwrap();
-    // }
-    // {
-    //     let mut epoch_total_size = BTreeMap::<u64, (u64, u64)>::new();
-    //     mm.lock().unwrap().iter().for_each(|(h, status)| {
-    //         epoch_total_size.entry(status.epoch).and_modify(|v| {
-    //             v.0 = v.0 + status.block_size;
-    //             v.1 = v.1 + 1;
-    //         }
-    //         ).or_insert((0, 0));
-    //     });
-    //     let results: Vec<(u64, u64)> = epoch_total_size.iter().map(|v| {
-    //         if v.1.1 == 0 {
-    //             return (*v.0, 0);
-    //         }
-    //         (*v.0, v.1.0 / v.1.1)
-    //     }).collect();
-    //
-    //     let mut y_max = 0_u64;
-    //     for (_, v) in &results {
-    //         if *v > y_max {
-    //             y_max = *v;
-    //         }
-    //     }
-    //
-    //
-    //     draw("img/epoch_average_block_size.png", &results, "CKB Sync Status: (epoch, average block_size)", y_max, "epoch", "average_block_size").unwrap();
-    // }
+        draw_u64(
+            "img/epoch_average_block_size.png",
+            "CKB Sync Status: (epoch, average block_size)",
+            "epoch",
+            "block_size",
+            points,
+            points1,
+        ).unwrap();
+    }
 
-    {
-        let mut txs_total_count = BTreeMap::<u64, (u64, u64)>::new();
-        mm.lock().unwrap().iter().for_each(|(h, status)| {
-            txs_total_count.entry(status.epoch).and_modify(|v| {
-                v.0 = v.0 + status.tx_count;
-                v.1 = v.1 + 1;
-            }
-            ).or_insert((0, 0));
-        });
-        let results: Vec<(u64, u64)> = txs_total_count.iter().map(|v| {
-            if v.1.1 == 0 {
-                return (*v.0, 0);
-            }
-            (*v.0, v.1.0 / v.1.1)
+    fn draw_height_txs_count(&self) {
+        let points: Vec<(u64, u64)> = self.mm0.iter().map(|(height, status)| {
+            (*height, status.tx_count)
+        }).collect();
+        let points1 = self.mm1.as_ref().map(|m| m.iter().map(|(height, status)| {
+            (*height, status.tx_count)
+        }).collect());
+
+        draw_u64(
+            "img/height_txs_count.png",
+            "CKB Sync Status: (height, txs_count)",
+            "height",
+            "txs_count",
+            points,
+            points1,
+        ).unwrap();
+    }
+
+    fn draw_epoch_average_txs_count(&self) {
+        let points: Vec<(f64, f64)> = self.epoch_mm0.iter().map(|(epoch, statics)| {
+            (*epoch as f64, statics.tx_count as f64 / statics.block_count as f64)
+        }).collect();
+        let points1 = self.epoch_mm1.as_ref().map(|m| m.iter().map(|(epoch, statics)| {
+            (*epoch as f64, statics.tx_count as f64 / statics.block_count as f64)
+        }).collect());
+        draw_f64(
+            "img/epoch_average_txs_count.png",
+            "CKB Sync Status: (epoch, average txs_count)",
+            "epoch",
+            "average_txs_count",
+            points,
+            points1,
+        ).unwrap();
+    }
+
+    fn draw_epoch_cycles(&self) {
+        let points: Vec<(f64, f64)> = self.epoch_mm0.iter().map(|(k, v)| {
+            (*k as f64, v.cycles)
         }).collect();
 
-        let mut y_max = 0_u64;
-        for (_, v) in &results {
-            if *v > y_max {
-                y_max = *v;
-            }
-        }
-
-
-        draw_u64("img/epoch_average_txs_count.png", &results, "CKB Sync Status: (epoch, average txs_count)",y_max, "epoch", "average_txs_count").unwrap();
+        let points1 = self.epoch_mm1.as_ref().map(|m| m.iter().map(|(k, v)| {
+            (*k as f64, v.cycles)
+        }).collect());
+        draw_f64(
+            "img/epoch_average_cycles.png",
+            "CKB Sync Status:(epoch,average_cycles)",
+            "epoch",
+            "average cycles",
+            points,
+            points1,
+        ).unwrap();
     }
-    // {
-    //     let results: Vec<(u64, u64)> = mm.lock().unwrap().iter().map(|(height, status)| {
-    //         (*height, status.tx_count)
-    //     }).collect();
-    //
-    //     let mut y_max = 0_u64;
-    //     for (_, v) in &results {
-    //         if *v > y_max {
-    //             y_max = *v;
-    //         }
-    //     }
-    //
-    //
-    //     draw("img/height_txs_count.png", &results, "CKB Sync Status: (height, txs_count)", y_max, "height", "txs_count").unwrap();
-    // }
+
+    fn draw_height_cycles(&self) {
+        let points: Vec<(u64, u64)> = self.mm0.iter().map(|(k, v)| {
+            (*k, v.cycles)
+        }).collect();
+        let points1 = self.mm1.as_ref().map(|m| m.iter().map(|(k, v)| {
+            (*k, v.cycles)
+        }).collect());
+        draw_u64(
+            "img/height_cycles.png",
+            "CKB Sync Status:(height,cycles)",
+            "height",
+            "cycles",
+            points,
+            points1,
+        ).unwrap();
+    }
+
+    fn draw_time_cost(&self) {
+        let points: Vec<(u64, u64)> = self.mm0.iter().filter(|(k, _)| **k % 100 == 0).map(|(k, v)| (*k, v.timestamp)).collect();
+        let points1: Option<Vec<(u64, u64)>> = self.mm1.as_ref().map(|mm| mm.iter().filter(|(k, _)| **k % 100 == 0).map(|(k, v)| (*k, v.timestamp)).collect());
+        draw_u64(
+            "img/time_height.png",
+            "CKB Sync Status:(timestamp, height)",
+            "timestamp",
+            "height",
+            points,
+            points1,
+        ).unwrap()
+    }
 }
 
-
-fn export_block_size() {
+fn export_block_size() -> BTreeMap<u64, u64> {
     let ckb_mainnet_dir = "/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-main/data/db";
     let db = RocksDB::open_in(&ckb_mainnet_dir, COLUMNS);
     let store = ChainDB::new(db, Default::default());
 
-    let txn = store.begin_transaction();
-    let latest_ext = store.get_current_epoch_ext().unwrap().number();
+    let mut mm = BTreeMap::<u64, u64>::new();
     for number in 0..8162480 {
         let block_hash = store.get_block_hash(number).unwrap();
-        let epoch_number = store.get_block_epoch(&block_hash).unwrap().number();
+
         let packed_block_size = store.get_packed_block(&block_hash).unwrap().total_size();
-        println!("{},{},{}", epoch_number, number, packed_block_size)
+        mm.insert(number, packed_block_size as u64);
     }
+    mm
 }
 
+#[derive(Clone, Copy)]
 struct LogStatics {
     cycles: u64,
     epoch: u64,
+    epoch_block_count: u64,
     tx_count: u64,
     timestamp: u64,
+    block_size: u64,
 }
 
 struct EpochStatics {
+    block_count: u64,
     cycles: f64,
     tx_count: f64,
+    block_size: f64,
 }
 
-fn draw_epoch_cycles(mm: &BTreeMap<u64, EpochStatics>) {
-    let result: Vec<(f64, f64)> = mm.iter().map(|(k, v)| {
-        (*k as f64, v.cycles)
-    }).collect();
-    let mut y_max = 0_f64;
-    for (_, v) in &result {
-        if *v > y_max {
-            y_max = *v;
-        }
-    }
-    draw_f64("img/epoch_average_cycles.png", &result, "CKB Sync Status:(epoch,average_cycles)", y_max, "epoch", "average cycles").unwrap();
-}
-
-fn draw_height_cycles(mm: &BTreeMap<u64, LogStatics>) {
-    let result: Vec<(u64, u64)> = mm.iter().map(|(k, v)| {
-        (*k, v.cycles)
-    }).collect();
-    let mut y_max = 0_u64;
-    for (_, v) in &result {
-        if *v > y_max {
-            y_max = *v;
-        }
-    }
-    draw_u64("img/height_cycles.png", &result, "CKB Sync Status:(height,cycles)", y_max, "height", "cycles").unwrap();
-}
 
 fn height_to_epoch(m: &BTreeMap<u64, LogStatics>) -> BTreeMap<u64, EpochStatics> {
     let mut ret = BTreeMap::<u64, EpochStatics>::new();
     for (key, value) in &m.values().group_by(|v| v.epoch) {
-        let vs: Vec<(u64,u64)> = value.map(|v| (v.cycles,v.tx_count)).collect();
+        let mut epoch_block_count = Rc::new(0_u64);
+        let vs: Vec<(u64, u64)> = value.map(|v| {
+            // set epoch_block_count to v.epoch_block_count
+            epoch_block_count = Rc::new(v.epoch_block_count);
+            (v.cycles, v.tx_count)
+        }).collect();
         let average_cycles = vs.iter().map(|v| v.0).sum::<u64>() as f64 / vs.len() as f64;
-        let average_tx_count= vs.iter().map(|v| v.1).sum::<u64>() as f64 / vs.len() as f64;
-        ret.insert(key, EpochStatics { cycles: average_cycles, tx_count: average_tx_count });
+        let average_tx_count = vs.iter().map(|v| v.1).sum::<u64>() as f64 / vs.len() as f64;
+        let average_block_size = vs.iter().map(|v| v.1).sum::<u64>() as f64 / vs.len() as f64;
+        ret.insert(key, EpochStatics {
+            block_count: *epoch_block_count,
+            cycles: average_cycles,
+            tx_count: average_tx_count,
+            block_size: average_block_size,
+        });
     }
     ret
 }
@@ -235,7 +230,7 @@ fn parse_info_level_log(log_file: &str) -> BTreeMap<u64, LogStatics> {
         let text = text.unwrap();
         if text.contains("[block_verifier]") {
             let start_i = text.find("[block_verifier]").unwrap();
-            let (block_number, hash, _, _, cycles, max_cycles) = scan_fmt!(&text[start_i..] ,  // input string
+            let (block_number, _hash, _, _, cycles, _max_cycles) = scan_fmt!(&text[start_i..] ,  // input string
                             "[block_verifier] block number: {}, hash: Byte32({}), size:{}/{}, cycles: {}/{}",     // format
            u64,
                 String,
@@ -249,8 +244,10 @@ fn parse_info_level_log(log_file: &str) -> BTreeMap<u64, LogStatics> {
             }).or_insert(LogStatics {
                 cycles,
                 epoch: 0,
+                epoch_block_count: 0,
                 tx_count: 0,
                 timestamp: 0,
+                block_size: 0,
             });
         } else if text.contains(" INFO ckb_chain::chain  block: ")
             && text.contains("hash: 0x")
@@ -259,7 +256,7 @@ fn parse_info_level_log(log_file: &str) -> BTreeMap<u64, LogStatics> {
             && text.contains(", txs: ")
         {
             let start_i = text.find("INFO ckb_chain::chain  block: ").unwrap();
-            let (block_number, hash, epoch, _, _, total_difficulty, txs_count) = scan_fmt!(&text[start_i..] ,  // input string
+            let (block_number, _hash_, epoch, _block_idx_in_epoch, block_count_in_epoch, _total_difficulty, txs_count) = scan_fmt!(&text[start_i..] ,  // input string
                             "INFO ckb_chain::chain  block: {}, hash: {}, epoch: {}({}/{}), total_diff: {x}, txs: {}",     // format
            u64,
                 String,
@@ -283,106 +280,31 @@ fn parse_info_level_log(log_file: &str) -> BTreeMap<u64, LogStatics> {
                 v.timestamp = time.timestamp() as u64;
                 v.epoch = epoch;
                 v.tx_count = txs_count;
+                v.epoch_block_count = block_count_in_epoch;
             }).or_insert(LogStatics {
                 cycles: 0,
                 epoch,
+                epoch_block_count: block_count_in_epoch,
                 tx_count: txs_count,
                 timestamp: time.timestamp() as u64,
+                block_size: 0,
             });
         }
     }
     log_statics
 }
 
-fn draw_time_cost() {
-    // read first arguments
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        println!("Usage: {} <file>", args[0]);
-        return;
-    }
 
-    // open file readonly
+fn draw_u64(filename: &str, chart_name: &str, x_description: &str, y_description: &str, data0: Vec<(u64, u64)>, data1: Option<Vec<(u64, u64)>>) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new(filename, (1280, 720)).into_drawing_area();
 
-    // get first arguemnt
-    let filename = &args[1];
-
-    let file = File::open(filename).expect("file not found");
-
-    // read file line by line
-    let reader = std::io::BufReader::new(file);
-
-    // 2022-09-21 09:57:29.339 +00:00 ChainService INFO ckb_chain::chain  block: 3366025, hash: 0x678f7e40679b70034efee7f7171b638303e439d9ea8bdb8d08dde92aba9075c1, epoch: 2273(922/931), total_diff: 0x32ae03e89cc3999010f5, txs: 1
-
-    let mut previous_time: Option<chrono::NaiveDateTime> = None;
-    let mut max_time_diff: chrono::Duration = chrono::Duration::seconds(0);
-    let mut time_diffs: Vec<u64> = vec![0; 100];
-
-    let mut points = Vec::new();
-    for text in reader.lines() {
-        let text = text.unwrap();
-
-
-        if text.contains(" INFO ckb_chain::chain  block: ")
-            && text.contains("hash: 0x")
-            && text.contains(", epoch: ")
-            && text.contains(", total_diff: 0x")
-            && text.contains(", txs: ")
-        {
-            let start_i = text.find("INFO ckb_chain::chain  block: ").unwrap();
-            let (block_number, hash, epoch, _, _, total_difficulty, txs_count) = scan_fmt!(&text[start_i..] ,  // input string
-                            "INFO ckb_chain::chain  block: {}, hash: {}, epoch: {}({}/{}), total_diff: {x}, txs: {}",     // format
-           u64,
-                String,
-                u64,
-                u64,
-                u64,
-               String,
-                u64
-            ).unwrap();
-
-
-            let time_str = &text[7..30].to_string();
-            // parse time from string
-            let time = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%d %H:%M:%S%.f")
-                .unwrap_or_else(|v| {
-                    panic!("parse time error: {}, text: {}", v, text);
-                });
-
-            // find first , position in text
-
-
-            if block_number % 100 != 0 {
-                continue;
-            }
-
-            if previous_time.is_none() {
-                previous_time = Some(time);
-                continue;
-            }
-            //
-            // let time_diff = time - previous_time.unwrap();
-            // if time_diff > max_time_diff {
-            //     max_time_diff = time_diff;
-            //     // println!(
-            //     //     "max time diff: {}s, text: {}",
-            //     //     time_diff.num_seconds(),
-            //     //     text
-            //     // );
-            // }
-            // time_diffs[time_diff.num_seconds() as usize] += 1;
-            //
-            previous_time = Some(time);
-
-            points.push((time.timestamp() as u64, block_number));
+    let mut y_max = data0.iter().map(|(_, v)| *v).max().unwrap();
+    if data1.is_some() {
+        let y_max1 = data1.as_ref().unwrap().iter().map(|(_, v)| *v).max().unwrap();
+        if y_max1 > y_max {
+            y_max = y_max1;
         }
     }
-
-    draw_u64("img/time_height.png", &points, "CKB Sync Status:(timestamp, height)", points.last().unwrap().1, "timestamp", "height").unwrap()
-}
-
-fn draw_u64(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64, x_description: &str, y_description: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let root = BitMapBackend::new(filename, (1280, 720)).into_drawing_area();
 
     root.fill(&WHITE)?;
     root.margin(10, 10, 20, 10);
@@ -392,8 +314,8 @@ fn draw_u64(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64,
         .x_label_area_size(50)
         .y_label_area_size(100)
         .build_cartesian_2d(
-            points.first().unwrap().0..points.last().unwrap().0,
-            0..y_max
+            data0.first().unwrap().0..data0.last().unwrap().0,
+            0..y_max,
         )?;
     chart
         .configure_series_labels()
@@ -406,18 +328,45 @@ fn draw_u64(filename: &str, points: &[(u64, u64)], chart_name: &str, y_max: u64,
         .y_desc(y_description)
         .draw().unwrap();
     chart.draw_series(PointSeries::of_element(
-        points.iter().map(|v| (v.0, v.1)),
+        data0.iter().map(|v| (v.0, v.1)),
         1,
         &RED,
         &|c, s, st| {
             EmptyElement::at(c) + Circle::new((0, 0), s, st.filled())
-// + Text::new(format!("{:?}", c), (10, 0), ("sans-serif", 10).into_font());
         },
     ))?;
+
+    if data1.is_some() {
+        chart.draw_series(PointSeries::of_element(
+            data1.unwrap().iter().map(|v| (v.0, v.1)),
+            1,
+            &BLUE,
+            &|c, s, st| {
+                EmptyElement::at(c) + Circle::new((0, 0), s, st.filled())
+            },
+        ))?;
+    }
+
     Ok(())
 }
-fn draw_f64(filename: &str, points: &[(f64, f64)], chart_name: &str, y_max: f64, x_description: &str, y_description: &str) -> Result<(), Box<dyn std::error::Error>> {
+
+fn draw_f64(
+    filename: &str,
+    chart_name: &str,
+    x_description: &str,
+    y_description: &str,
+    data0: Vec<(f64, f64)>,
+    data1: Option<Vec<(f64, f64)>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = BitMapBackend::new(filename, (1280, 720)).into_drawing_area();
+
+    let mut y_max = data0.iter().map(|(_, v)| *v).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+    if data1.is_some() {
+        let y_max1 = data1.as_ref().unwrap().iter().map(|(_, v)| *v).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+        if y_max1 > y_max {
+            y_max = y_max1;
+        }
+    }
 
     root.fill(&WHITE)?;
     root.margin(10, 10, 20, 10);
@@ -427,7 +376,7 @@ fn draw_f64(filename: &str, points: &[(f64, f64)], chart_name: &str, y_max: f64,
         .x_label_area_size(50)
         .y_label_area_size(100)
         .build_cartesian_2d(
-            points.first().unwrap().0..points.last().unwrap().0,
+            data0.first().unwrap().0..data0.last().unwrap().0,
             0.0..y_max,
         )?;
     chart
@@ -441,13 +390,24 @@ fn draw_f64(filename: &str, points: &[(f64, f64)], chart_name: &str, y_max: f64,
         .y_desc(y_description)
         .draw().unwrap();
     chart.draw_series(PointSeries::of_element(
-        points.iter().map(|v| (v.0, v.1)),
+        data0.iter().map(|v| (v.0, v.1)),
         1,
         &RED,
         &|c, s, st| {
             EmptyElement::at(c) + Circle::new((0, 0), s, st.filled())
-// + Text::new(format!("{:?}", c), (10, 0), ("sans-serif", 10).into_font());
         },
     ))?;
+
+    if data1.is_some() {
+        chart.draw_series(PointSeries::of_element(
+            data1.unwrap().iter().map(|v| (v.0, v.1)),
+            1,
+            &BLUE,
+            &|c, s, st| {
+                EmptyElement::at(c) + Circle::new((0, 0), s, st.filled())
+            },
+        ))?;
+    }
+
     Ok(())
 }
