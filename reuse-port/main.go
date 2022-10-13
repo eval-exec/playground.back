@@ -1,13 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"github.com/libp2p/go-reuseport"
-	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -17,44 +16,47 @@ func init() {
 }
 
 func main() {
-	log.Println("start.")
+	log.Println("start.", strings.Join(os.Args, ","))
 	// get args from cli
 	command := os.Args[1]
 	if len(os.Args) < 3 {
 		log.Fatalln("usage: ./cli server [port]")
 	}
-	port := os.Args[2]
+	localAddr := os.Args[2]
 	switch command {
 	case "server":
 		log.Println("normal server")
-		s := Server{}
-		s.start(port)
+		s := Server{
+			localAddr: localAddr,
+		}
+		s.start()
 	case "reuse-port-server":
 		log.Println("reuse port server")
-		if len(os.Args) != 4 {
-			log.Fatalln("usage: ./cli server [port]")
+		remoteAddr := ""
+		if len(os.Args) == 4 {
+			remoteAddr = os.Args[3]
 		}
-		remotePort := os.Args[3]
+
 		s := ReuseServer{
-			localPort: port,
+			localAddr: localAddr,
 		}
-		s.start(remotePort)
+		s.start(remoteAddr)
 	default:
-		log.Fatalln("unknown command")
+		log.Fatalln("unknown command", command)
 	}
 }
 
 type ReuseServer struct {
-	localPort string
+	localAddr string
 }
 
-func (s *ReuseServer) start(remotePort string) {
+func (s *ReuseServer) start(remoteAddr string) {
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 
-	log.Println("listen on ", s.localPort)
-	localAddr := fmt.Sprintf("192.168.1.6:%s", s.localPort)
+	localAddr := s.localAddr
+	log.Println("node1 listen and reuse port on ", localAddr)
 	listen, err := reuseport.Listen("tcp", localAddr)
 	if err != nil {
 		log.Fatalf("listen failed %s", err)
@@ -64,50 +66,56 @@ func (s *ReuseServer) start(remotePort string) {
 		for {
 			select {
 			case <-tk.C:
-				remoteAddr := fmt.Sprintf("127.0.0.1:%s", remotePort)
-				dial, err := reuseport.Dial("tcp", localAddr, remoteAddr)
-				if err != nil {
-					log.Printf("dial remote %s failed %s", remoteAddr, err)
+				if len(remoteAddr) == 0 {
 					continue
 				}
-				log.Printf("dial remote %s", remoteAddr)
-				if _, err := dial.Write([]byte(time.Now().String())); err != nil {
-					log.Printf("dial wrtie %s\n", err)
+				log.Printf("dialing remote %s, local: %s\n", remoteAddr, localAddr)
+				dial, err := reuseport.Dial("tcp", localAddr, remoteAddr)
+				if err != nil {
+					log.Printf("dial remote %s failed: %s", remoteAddr, err)
+					continue
 				}
+				log.Printf("node1: dial remote %s; local client:%s", remoteAddr, dial.LocalAddr())
 				dial.Close()
 			}
 		}
 
 	}()
 
+	go func() {
+		for {
+
+			accept, err := listen.Accept()
+			if err != nil {
+				log.Printf("accept failed %s", err)
+				continue
+			}
+			log.Printf("get request from %s\n", accept.RemoteAddr())
+			remoteAddr = accept.RemoteAddr().String()
+		}
+	}()
+
 	for {
 		select {
-		case <-ch:
+		case s := <-ch:
+			log.Println("received a signal", s)
 			return
 		default:
 
 		}
-		accept, err := listen.Accept()
-		if err != nil {
-			log.Printf("accept failed %s", err)
-			continue
-		}
-		all, err := io.ReadAll(accept)
-		if err != nil {
-			log.Printf("read failed %s", err)
-			continue
-		}
-		log.Printf("read %s\n", string(all))
 	}
 
 }
 
 type Server struct {
+	localAddr string
 }
 
-func (s *Server) start(port string) {
+func (s *Server) start() {
+	localAddr := s.localAddr
 
-	listen, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%s", port))
+	log.Println("listening on ", localAddr)
+	listen, err := net.Listen("tcp", localAddr)
 	if err != nil {
 		log.Fatalf("listen failed %s", err)
 	}
@@ -117,12 +125,17 @@ func (s *Server) start(port string) {
 			log.Printf("accept failed %s", err)
 			continue
 		}
-		all, err := io.ReadAll(accept)
+		remoteAddr := accept.RemoteAddr().String()
+		accept.Close()
+
+		log.Printf("node0: get request from remote address: %s\n", remoteAddr)
+		dial, err := net.Dial("tcp", remoteAddr)
 		if err != nil {
-			log.Printf("read failed %s", err)
+			log.Printf("dial remote %s, failed %s\n", remoteAddr, err)
 			continue
 		}
-		log.Printf("remote address: %s, got: %s\n", accept.RemoteAddr().String(), string(all))
+		log.Printf("dial remote %s success\n", remoteAddr)
+		dial.Close()
 	}
 
 }
