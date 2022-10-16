@@ -1,4 +1,4 @@
-# reproduce reuse port in docker container issue
+# try reproduce reuse port issue
 
 ## usage `./reuse-port-rs [reuse port] [optional: remote address]`
 example :
@@ -17,6 +17,6 @@ docker build -t reuse-port-rs:v0 .
 In host 1: execute `docker run --rm --network host reuse-port-rs:v0 8080`
 In host 2: execute `cargo run -- 18080 [remote public ip]:8080`
 
-## reproduce the issue
+## expected
 In host 1: execute `docker run --rm -p 8080:8080 reuse-port-rs:v0 8080`
 In host 2: execute `cargo run -- 18080 [remote public ip]:8080`

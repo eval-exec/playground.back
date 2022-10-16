@@ -9,4 +9,4 @@ edition = "2021"
 socket2 = { version = "0.4", features = ["all"] }
 log = "0.4.17"
 simple_logger = "2.3.0"
-
+ctrlc = { version = "3.0", features = ["termination"] }

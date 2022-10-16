@@ -15,14 +15,9 @@ RUN rm src/*.rs
 COPY ./src ./src
 
 RUN cargo build --release
-#
-#FROM alpine:3.16
-#
-#RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
-#    apk add --no-cache tzdata && \
-#    apk add --no-cache libgcc && \
-#    apk add --no-cache build-base
-#
-#COPY --from=builder /reuse-port-rs/target/release/reuse-port-rs /reuse-port-rs
 
-ENTRYPOINT ["/reuse-port-rs/target/release/reuse-port-rs"]
+FROM ubuntu:22.10
+
+COPY --from=builder /reuse-port-rs/target/release/reuse-port-rs /reuse-port-rs
+
+ENTRYPOINT ["/reuse-port-rs"]
