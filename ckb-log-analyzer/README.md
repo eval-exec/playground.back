@@ -15,3 +15,10 @@
 ![inline](static/height_cycles.png)
 ## Red: yamux-1M window size vs Blue(big ArrayQueue)
 ![inline](static/time_heihgt_big_queue_vs_yamux.png)
+## All
+- red: nothing changed
+- green: change yamux window size to 1M
+- blue: change yamux window size to 1M & use crossbeam_queue:ArrayQueue
+- black: disable p2p module, load headers and blocks from a latest-top-synced ChainDb
+![inline](static/all.png)
+

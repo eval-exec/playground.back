@@ -20,3 +20,4 @@ serde = "1.0.145"
 serde_cbor = "0.11.2"
 rayon = "1.5.3"
 crossbeam-queue = "0.3.6"
+clap = { version = "4.0.18" ,features = ["derive"]}

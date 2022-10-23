@@ -1,49 +1,63 @@
-use crossbeam_queue::{ArrayQueue, SegQueue};
+extern crate core;
+
+use crossbeam_queue::SegQueue;
 use itertools::Itertools;
 use plotters::prelude::*;
 use rayon::prelude::*;
 use scan_fmt::scan_fmt;
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
+use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufRead;
+use std::ops::Index;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+use clap::{Parser, Subcommand};
 use log::info;
 use serde::{Deserialize, Serialize};
 
-fn save_context(c: &Context) {
-    // serialize c to file
-    let file = File::create("memo.cbor").unwrap();
-    let s = SContext::from(c);
-    serde_cbor::to_writer(file, &s).unwrap();
+#[derive(Parser)]
+#[command(about, long_about = None)]
+struct App {
+    #[clap(long, action)]
+    logs_path: Vec<PathBuf>,
+    #[clap(long, action)]
+    labels: Vec<String>,
 }
 
-fn load_context(now: &Instant) -> Context {
-    // deserialize from file
-    match File::open("memo.cbor") {
-        Ok(file) => {
-            info!("loading context from file");
-            let s: SContext = serde_cbor::from_reader(file).unwrap();
-            info!("loaded context from file");
-            Context::from(&s)
-        }
-        Err(_) => {
-            info!("building context");
-            let c = build_context(now);
-            info!("saving context to file");
-            save_context(&c);
-            info!("context saved to cbor file");
-            c
-        }
-    }
-}
-
-fn parse_log_entry(filename: &str) -> BTreeMap<u64, LogStatics> {
+// fn save_context(c: &Context) {
+//     // serialize c to file
+//     let file = File::create("memo.cbor").unwrap();
+//     let s = SContext::from(c);
+//     serde_cbor::to_writer(file, &s).unwrap();
+// }
+//
+// fn load_context(now: &Instant, path_bufs: Vec<PathBuf>) -> Context {
+//     // deserialize from file
+//     match File::open("memo.cbor") {
+//         Ok(file) => {
+//             info!("loading context from file");
+//             let s: SContext = serde_cbor::from_reader(file).unwrap();
+//             info!("loaded context from file");
+//             Context::from(&s)
+//         }
+//         Err(_) => {
+//             info!("building context");
+//             let c = build_context(now, path_bufs);
+//             info!("saving context to file");
+//             save_context(&c);
+//             info!("context saved to cbor file");
+//             c
+//         }
+//     }
+// }
+//
+fn parse_log_entry(filename: PathBuf) -> BTreeMap<u64, LogStatics> {
     let (_verifier, blocks) = parse_log_parallel(filename);
     let mut tree = BTreeMap::new();
     blocks.into_iter().for_each(|v| {
@@ -63,7 +77,7 @@ fn parse_log_entry(filename: &str) -> BTreeMap<u64, LogStatics> {
 }
 
 fn parse_log_parallel(
-    filename: &str,
+    filename: PathBuf,
 ) -> (SegQueue<EntryBlockVerifier>, SegQueue<EntryBlockProcess>) {
     let file = File::open(filename).expect("file not found");
 
@@ -91,30 +105,20 @@ fn parse_log_parallel(
     (verifier, blocks)
 }
 
-fn build_context(now: &Instant) -> Context {
-    let p0 = thread::spawn(|| {
-        let mm0 = parse_log_entry(
-            // "/home/exec/Projects/github.com/nervosnetwork/ckb-run-log/ckb-main/data/logs/run.log",
-            "/home/exec/Projects/github.com/nervosnetwork/chain/logs/sync-base-turbo.log",
-        );
-        mm0
-    });
-    let p1 = thread::spawn(|| {
-        let mm1 = parse_log_entry(
-            "/home/exec/Projects/github.com/nervosnetwork/chain/sync-big-queue/data/logs/run.log",
-        );
-        mm1
-    });
+fn build_context(now: &Instant, file_paths: Vec<PathBuf>, labels: Vec<String>) -> Context {
+    let mut join_handles = Vec::new();
+    for file_path in file_paths {
+        join_handles.push(thread::spawn(|| parse_log_entry(file_path)));
+    }
     let e0 = thread::spawn(|| {
         let block_size_mm = export_block_size();
         block_size_mm
     });
-
-    let mut mm0 = RefCell::new(p0.join().unwrap());
-    info!("parse ckb log {:?}", now.elapsed());
-
-    let mut mm1 = RefCell::new(p1.join().unwrap());
-    info!("parse ckb yamux log {:?}", now.elapsed());
+    let mut datas = Vec::new();
+    for jh in join_handles {
+        datas.push(jh.join().unwrap());
+        info!("parse ckb log {:?}", now.elapsed());
+    }
 
     // let block_size_mm = e0.join().unwrap();
     // info!("export block size {:?}", now.elapsed());
@@ -148,9 +152,8 @@ fn build_context(now: &Instant) -> Context {
 
     let c = Context {
         epoch_mm0: Arc::new(BTreeMap::new()),
-        mm0: Arc::new(mm0.into_inner()),
-        epoch_mm1: Some(Arc::new(BTreeMap::new())),
-        mm1: Some(Arc::new(mm1.into_inner())),
+        mm: Arc::new(datas),
+        labels: labels,
     };
     c
 }
@@ -159,8 +162,19 @@ fn main() {
     std::env::set_var("RUST_LOG", "debug");
     env_logger::init();
     info!("start");
+
+    let app = App::parse();
+    if app.logs_path.is_empty() {
+        panic!("log paths is empty");
+    } else {
+        info!("logs-path count: {}", &app.logs_path.len());
+        for path in &app.logs_path {
+            info!("log-path: {}", path.to_string_lossy());
+        }
+    }
+
     let now = Instant::now();
-    let ac = Arc::new(build_context(&now));
+    let ac = Arc::new(build_context(&now, app.logs_path, app.labels));
     let now = Arc::new(now);
 
     let mut join_handles = vec![];
@@ -220,222 +234,204 @@ fn main() {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct SContext {
-    epoch_mm0: BTreeMap<u64, EpochStatics>,
-    mm0: BTreeMap<u64, LogStatics>,
-
-    epoch_mm1: Option<BTreeMap<u64, EpochStatics>>,
-    mm1: Option<BTreeMap<u64, LogStatics>>,
-}
-
-impl From<&Context> for SContext {
-    fn from(c: &Context) -> Self {
-        SContext {
-            epoch_mm0: (*c.epoch_mm0).clone(),
-            mm0: (*c.mm0).clone(),
-            epoch_mm1: c.epoch_mm1.clone().map(|m| (*m).clone()),
-            mm1: c.mm1.clone().map(|m| (*m).clone()),
-        }
-    }
-}
-
-impl From<&SContext> for Context {
-    fn from(s: &SContext) -> Self {
-        Context {
-            epoch_mm0: Arc::new(s.epoch_mm0.clone()),
-            mm0: Arc::new(s.mm0.clone()),
-            epoch_mm1: s.epoch_mm1.as_ref().map(|mm| Arc::new(mm.clone())),
-            mm1: s.mm1.as_ref().map(|mm| Arc::new(mm.clone())),
-        }
-    }
-}
+// #[derive(Serialize, Deserialize, Debug)]
+// struct SContext {
+//     epoch_mm0: BTreeMap<u64, EpochStatics>,
+//     mm0: BTreeMap<u64, LogStatics>,
+//
+//     epoch_mm1: Option<BTreeMap<u64, EpochStatics>>,
+//     mm1: Option<BTreeMap<u64, LogStatics>>,
+// }
+//
+// impl From<&Context> for SContext {
+//     fn from(c: &Context) -> Self {
+//         SContext {
+//             epoch_mm0: (*c.epoch_mm0).clone(),
+//             mm0: (*c.mm0).clone(),
+//             epoch_mm1: c.epoch_mm1.clone().map(|m| (*m).clone()),
+//             mm1: c.mm1.clone().map(|m| (*m).clone()),
+//         }
+//     }
+// }
+//
+// impl From<&SContext> for Context {
+//     fn from(s: &SContext) -> Self {
+//         Context {
+//             epoch_mm0: Arc::new(s.epoch_mm0.clone()),
+//             mm0: Arc::new(s.mm0.clone()),
+//             mm1: s.mm1.as_ref().map(|mm| Arc::new(mm.clone())),
+//         }
+//     }
+// }
 
 struct Context {
     epoch_mm0: Arc<BTreeMap<u64, EpochStatics>>,
-    mm0: Arc<BTreeMap<u64, LogStatics>>,
-
-    epoch_mm1: Option<Arc<BTreeMap<u64, EpochStatics>>>,
-    mm1: Option<Arc<BTreeMap<u64, LogStatics>>>,
+    mm: Arc<Vec<BTreeMap<u64, LogStatics>>>,
+    labels: Vec<String>,
 }
 
 impl Context {
-    fn draw_epoch_average_block_size(&self) {
-        let points: Vec<(f64, f64)> = self
-            .epoch_mm0
-            .iter()
-            .map(|(epoch, status)| {
-                (
-                    *epoch as f64,
-                    status.block_size as f64 / status.block_count as f64,
-                )
-            })
-            .collect();
-        let points1: Option<Vec<(f64, f64)>> = self.epoch_mm1.as_ref().map(|m| {
-            m.iter()
-                .map(|(epoch, status)| {
-                    (
-                        *epoch as f64,
-                        status.block_size as f64 / status.block_count as f64,
-                    )
-                })
-                .collect()
-        });
-        draw_f64(
-            "img/epoch_average_block_size.png",
-            "CKB Sync Status: (epoch, average_block_size)",
-            "epoch",
-            "average_block_size",
-            points,
-            points1,
-        )
-        .unwrap();
-    }
-
-    fn draw_height_block_size(&self) {
-        let points: Vec<(u64, u64)> = self
-            .mm0
-            .iter()
-            .map(|(height, status)| (*height, status.block_size))
-            .collect();
-        let points1: Option<Vec<(u64, u64)>> = self.mm1.as_ref().map(|m| {
-            m.iter()
-                .map(|(height, status)| (*height, status.block_size))
-                .collect()
-        });
-
-        draw_u64(
-            "img/epoch_average_block_size.png",
-            "CKB Sync Status: (epoch, average block_size)",
-            "epoch",
-            "block_size",
-            points,
-            points1,
-        )
-        .unwrap();
-    }
-
-    fn draw_height_txs_count(&self) {
-        let points: Vec<(u64, u64)> = self
-            .mm0
-            .iter()
-            .map(|(height, status)| (*height, status.tx_count))
-            .collect();
-        let points1 = self.mm1.as_ref().map(|m| {
-            m.iter()
-                .map(|(height, status)| (*height, status.tx_count))
-                .collect()
-        });
-
-        draw_u64(
-            "img/height_txs_count.png",
-            "CKB Sync Status: (height, txs_count)",
-            "height",
-            "txs_count",
-            points,
-            points1,
-        )
-        .unwrap();
-    }
-
-    fn draw_epoch_average_txs_count(&self) {
-        let points: Vec<(f64, f64)> = self
-            .epoch_mm0
-            .iter()
-            .map(|(epoch, statics)| {
-                (
-                    *epoch as f64,
-                    statics.tx_count as f64 / statics.block_count as f64,
-                )
-            })
-            .collect();
-        let points1 = self.epoch_mm1.as_ref().map(|m| {
-            m.iter()
-                .map(|(epoch, statics)| {
-                    (
-                        *epoch as f64,
-                        statics.tx_count as f64 / statics.block_count as f64,
-                    )
-                })
-                .collect()
-        });
-        draw_f64(
-            "img/epoch_average_txs_count.png",
-            "CKB Sync Status: (epoch, average txs_count)",
-            "epoch",
-            "average_txs_count",
-            points,
-            points1,
-        )
-        .unwrap();
-    }
-
-    fn draw_epoch_cycles(&self) {
-        let points: Vec<(f64, f64)> = self
-            .epoch_mm0
-            .iter()
-            .map(|(k, v)| (*k as f64, v.cycles))
-            .collect();
-
-        let points1 = self
-            .epoch_mm1
-            .as_ref()
-            .map(|m| m.iter().map(|(k, v)| (*k as f64, v.cycles)).collect());
-        draw_f64(
-            "img/epoch_average_cycles.png",
-            "CKB Sync Status:(epoch,average_cycles)",
-            "epoch",
-            "average cycles",
-            points,
-            points1,
-        )
-        .unwrap();
-    }
+    // fn draw_epoch_average_block_size(&self) {
+    //     let points: Vec<(f64, f64)> = self
+    //         .epoch_mm0
+    //         .iter()
+    //         .map(|(epoch, status)| {
+    //             (
+    //                 *epoch as f64,
+    //                 status.block_size as f64 / status.block_count as f64,
+    //             )
+    //         })
+    //         .collect();
+    //     let points1: Option<Vec<(f64, f64)>> = self.epoch_mm1.as_ref().map(|m| {
+    //         m.iter()
+    //             .map(|(epoch, status)| {
+    //                 (
+    //                     *epoch as f64,
+    //                     status.block_size as f64 / status.block_count as f64,
+    //                 )
+    //             })
+    //             .collect()
+    //     });
+    //     draw_f64(
+    //         "img/epoch_average_block_size.png",
+    //         "CKB Sync Status: (epoch, average_block_size)",
+    //         "epoch",
+    //         "average_block_size",
+    //         points,
+    //         points1,
+    //     )
+    //     .unwrap();
+    // }
+    //
+    // fn draw_height_block_size(&self) {
+    //     let points: Vec<(u64, u64)> = self
+    //         .mm0
+    //         .iter()
+    //         .map(|(height, status)| (*height, status.block_size))
+    //         .collect();
+    //     let points1: Option<Vec<(u64, u64)>> = self.mm1.as_ref().map(|m| {
+    //         m.iter()
+    //             .map(|(height, status)| (*height, status.block_size))
+    //             .collect()
+    //     });
+    //
+    //     draw_u64(
+    //         "img/epoch_average_block_size.png",
+    //         "CKB Sync Status: (epoch, average block_size)",
+    //         "epoch",
+    //         "block_size",
+    //         points,
+    //         points1,
+    //     )
+    //     .unwrap();
+    // }
+    //
+    // fn draw_height_txs_count(&self) {
+    //     let points: Vec<(u64, u64)> = self
+    //         .mm0
+    //         .iter()
+    //         .map(|(height, status)| (*height, status.tx_count))
+    //         .collect();
+    //     let points1 = self.mm1.as_ref().map(|m| {
+    //         m.iter()
+    //             .map(|(height, status)| (*height, status.tx_count))
+    //             .collect()
+    //     });
+    //
+    //     draw_u64(
+    //         "img/height_txs_count.png",
+    //         "CKB Sync Status: (height, txs_count)",
+    //         "height",
+    //         "txs_count",
+    //         points,
+    //         points1,
+    //     )
+    //     .unwrap();
+    // }
+    //
+    // fn draw_epoch_average_txs_count(&self) {
+    //     let points: Vec<(f64, f64)> = self
+    //         .epoch_mm0
+    //         .iter()
+    //         .map(|(epoch, statics)| {
+    //             (
+    //                 *epoch as f64,
+    //                 statics.tx_count as f64 / statics.block_count as f64,
+    //             )
+    //         })
+    //         .collect();
+    //
+    //     let mut points_vec = Vec::new();
+    //     points_vec.push(points);
+    //     draw_f64(
+    //         "img/epoch_average_txs_count.png",
+    //         "CKB Sync Status: (epoch, average txs_count)",
+    //         "epoch",
+    //         "average_txs_count",
+    //         points_vec
+    //     )
+    //     .unwrap();
+    // }
+    //
+    // fn draw_epoch_cycles(&self) {
+    //     let points: Vec<(f64, f64)> = self
+    //         .epoch_mm0
+    //         .iter()
+    //         .map(|(k, v)| (*k as f64, v.cycles))
+    //         .collect();
+    //
+    //     draw_f64(
+    //         "img/epoch_average_cycles.png",
+    //         "CKB Sync Status:(epoch,average_cycles)",
+    //         "epoch",
+    //         "average cycles",
+    //         points,
+    //         points1,
+    //     )
+    //     .unwrap();
+    // }
 
     fn draw_height_cycles(&self) {
-        let points: Vec<(u64, u64)> = self.mm0.iter().map(|(k, v)| (*k, v.cycles)).collect();
-        let points1 = self
-            .mm1
-            .as_ref()
-            .map(|m| m.iter().map(|(k, v)| (*k, v.cycles)).collect());
+        let points_vec = self
+            .mm
+            .iter()
+            .map(|m| {
+                let points: Vec<(u64, u64)> = m.iter().map(|(k, v)| (*k, v.cycles)).collect();
+                points
+            })
+            .collect();
         draw_u64(
             "img/height_cycles.png",
             "CKB Sync Status:(height,cycles)",
             "height",
             "cycles",
-            points,
-            points1,
+            &points_vec,
+            &self.labels,
         )
         .unwrap();
     }
 
     fn draw_time_cost(&self) {
-        let points: Vec<(u64, u64)> = self
-            .mm0
+        let points_vec = self
+            .mm
             .iter()
-            .filter(|(k, v)| **k % 100 == 0)
-            .map(|(k, v)| (v.timestamp, *k))
+            .map(|m| {
+                let points: Vec<(u64, u64)> = m
+                    .iter()
+                    .filter(|(k, v)| **k % 100 == 0)
+                    .map(|(k, v)| (v.timestamp, *k))
+                    .collect();
+                let first = points.first().unwrap().0;
+                points.iter().map(|(k, v)| (*k - first, *v)).collect()
+            })
             .collect();
-        let first = points.first().unwrap().0;
-        let points: Vec<(u64, u64)> = points.iter().map(|(k, v)| (*k - first, *v)).collect();
-
-        let points1: Option<Vec<(u64, u64)>> = self.mm1.as_ref().map(|mm| {
-            mm.iter()
-                .filter(|(k, _)| **k % 100 == 0)
-                .map(|(k, v)| (v.timestamp, *k))
-                .collect()
-        });
-        let points1 = points1.map(|p| {
-            let first = p.first().unwrap().0;
-            p.iter().map(|(k, v)| (*k - first, *v)).collect()
-        });
         draw_u64(
-            "img/time_height_join1.png",
+            "img/tmp.png",
             "CKB Sync Status:(timestamp, height)",
             "timestamp(s)",
             "height",
-            points,
-            points1,
+            &points_vec,
+            &self.labels,
         )
         .unwrap()
     }
@@ -704,68 +700,61 @@ fn draw_u64(
     chart_name: &str,
     x_description: &str,
     y_description: &str,
-    data0: Vec<(u64, u64)>,
-    data1: Option<Vec<(u64, u64)>>,
+    datas: &Vec<Vec<(u64, u64)>>,
+    labels: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = BitMapBackend::new(filename, (1920, 1080)).into_drawing_area();
-
-    let mut y_max = data0.iter().map(|(_, v)| *v).max().unwrap();
-    if data1.is_some() {
-        let y_max1 = data1
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|(_, v)| *v)
-            .max()
-            .unwrap();
-        if y_max1 > y_max {
-            y_max = y_max1;
-        }
-    }
-
-    let mut x_max = data0.last().unwrap().0;
-    if data1.is_some() {
-        let x_max1 = data1.as_ref().unwrap().last().unwrap().0;
-        if x_max1 > x_max {
-            x_max = x_max1;
-        }
-    }
+    let (mut x_max, mut x_min, mut y_max, mut y_min) = (0, u64::MAX, 0, u64::MAX);
+    datas.iter().for_each(|data| {
+        let y_max0 = data.iter().map(|(_, v)| *v).max().unwrap();
+        let y_min0 = data.iter().map(|(_, v)| *v).min().unwrap();
+        y_max = max(y_max, y_max0);
+        y_min = min(y_min, y_min0);
+        let x_max0 = data.last().unwrap().0;
+        let x_min0 = data.first().unwrap().0;
+        x_max = max(x_max, x_max0);
+        x_min = min(x_min, x_min0);
+    });
 
     root.fill(&WHITE)?;
-    root.margin(10, 10, 20, 10);
+    root.margin(10_u32, 10_u32, 20_u32, 10_u32);
 
     let mut chart = ChartBuilder::on(&root)
         .caption(chart_name, ("sans-serif", 100).into_font())
-        .x_label_area_size(50)
-        .y_label_area_size(100)
-        .build_cartesian_2d(data0.first().unwrap().0..x_max, 0..y_max)?;
+        .x_label_area_size(50_u32)
+        .y_label_area_size(100_u32)
+        .build_cartesian_2d(x_min..x_max, y_min..y_max)?;
+
+    chart
+        .configure_mesh()
+        .x_desc(x_description)
+        .y_desc(y_description)
+        .draw()?;
+
+    const COLORS: [RGBColor; 6] = [RED, GREEN, BLUE, BLACK, CYAN, MAGENTA];
+    for (i, data) in datas.iter().enumerate() {
+        let color = COLORS.get(i).unwrap();
+        chart
+            .draw_series(PointSeries::of_element(
+                data.iter().map(|v| (v.0, v.1)),
+                1,
+                color,
+                &|c, s, st| EmptyElement::at(c) + Circle::new((0, 0), s, st.filled()),
+            ))?
+            .label(labels.get(i).unwrap())
+            .legend(|(x, y)| {
+                let color = *color;
+                PathElement::new(vec![(x, y), (x + 20, y)], color)
+            });
+    }
+
     chart
         .configure_series_labels()
         .border_style(&BLACK)
         .background_style(&WHITE.mix(0.8))
         .draw()?;
 
-    chart
-        .configure_mesh()
-        .x_desc(x_description)
-        .y_desc(y_description)
-        .draw()
-        .unwrap();
-    chart.draw_series(PointSeries::of_element(
-        data0.iter().map(|v| (v.0, v.1)),
-        1,
-        &RED,
-        &|c, s, st| EmptyElement::at(c) + Circle::new((0, 0), s, st.filled()),
-    ))?;
-
-    if data1.is_some() {
-        chart.draw_series(PointSeries::of_element(
-            data1.unwrap().iter().map(|v| (v.0, v.1)),
-            1,
-            &BLUE,
-            &|c, s, st| EmptyElement::at(c) + Circle::new((0, 0), s, st.filled()),
-        ))?;
-    }
+    root.present().expect("unable write to file");
 
     Ok(())
 }
