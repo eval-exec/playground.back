@@ -1,4 +1,32 @@
+# ckb-log-analyzer
+
+A simple tool to analyse ckb node log, draw a (timestamp->tip_height) synchronize graph.
+```bash
+
+$ ckb-log-analyzer --help
+Usage: ckb-log-analyzer <COMMAND>
+
+Commands:
+  draw
+  analyse
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help information
+```
+
+## Example:
+```bash
+ckb-log-analyzer draw \
+  --logs-path ckb-develop/data/logs/run.log --labels "Develop Branch" \
+  --logs-path ckb-block-queue-20ms/data/logs/run.log  --labels "Use ArrayQueue Branch" \
+  --outdir /tmp/
+```
+
+
+
 # CKB Log Analyze Result
+
 ## height and timestamp on sync progress
 ![inline](static/time_height.png)
 ## epoch and average block size on sync progress
