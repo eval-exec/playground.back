@@ -1,12 +1,13 @@
 extern crate core;
 
+use chrono::Duration;
 use crossbeam_queue::SegQueue;
 use itertools::Itertools;
 use plotters::prelude::*;
 use rayon::prelude::*;
 use scan_fmt::scan_fmt;
 use std::cell::RefCell;
-use std::cmp::{max, min};
+use std::cmp::{max, max_by, min};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufRead;
@@ -17,17 +18,38 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Command, Parser, Subcommand};
 use log::info;
 use serde::{Deserialize, Serialize};
-
-#[derive(Parser)]
+#[derive(clap::Parser)]
 #[command(about, long_about = None)]
 struct App {
+    #[command(subcommand)]
+    action: Action,
+}
+
+#[derive(clap::Subcommand)]
+enum Action {
+    Draw(DrawArg),
+    Analyse(AnalyseArg),
+}
+
+#[derive(Parser)]
+struct AnalyseArg {
+    #[clap(long, action)]
+    logs_path: PathBuf,
+    #[arg(short, long, default_value_t = 2000)]
+    every_height: u64,
+}
+
+#[derive(Parser)]
+struct DrawArg {
     #[clap(long, action)]
     logs_path: Vec<PathBuf>,
     #[clap(long, action)]
     labels: Vec<String>,
+    #[clap(long, action)]
+    outdir: PathBuf,
 }
 
 // fn save_context(c: &Context) {
@@ -98,6 +120,9 @@ fn parse_log_parallel(
             // if let Some(v) = entry_block_verifer
             //     .parse_line(&line) { verifier.push(v) }
             if let Some(v) = entry_block_process.parse_line(&line) {
+                // if v.block_number > 6_100_000 {
+                //     return;
+                // }
                 blocks.push(v)
             }
         });
@@ -110,10 +135,10 @@ fn build_context(now: &Instant, file_paths: Vec<PathBuf>, labels: Vec<String>) -
     for file_path in file_paths {
         join_handles.push(thread::spawn(|| parse_log_entry(file_path)));
     }
-    let e0 = thread::spawn(|| {
-        let block_size_mm = export_block_size();
-        block_size_mm
-    });
+    // let e0 = thread::spawn(|| {
+    //     let block_size_mm = export_block_size();
+    //     block_size_mm
+    // });
     let mut datas = Vec::new();
     for jh in join_handles {
         datas.push(jh.join().unwrap());
@@ -154,6 +179,7 @@ fn build_context(now: &Instant, file_paths: Vec<PathBuf>, labels: Vec<String>) -
         epoch_mm0: Arc::new(BTreeMap::new()),
         mm: Arc::new(datas),
         labels: labels,
+        outdir: Default::default(),
     };
     c
 }
@@ -162,75 +188,113 @@ fn main() {
     std::env::set_var("RUST_LOG", "debug");
     env_logger::init();
     info!("start");
+    info!(
+        "current dir: {}",
+        std::env::current_dir().unwrap().to_string_lossy()
+    );
 
     let app = App::parse();
-    if app.logs_path.is_empty() {
-        panic!("log paths is empty");
-    } else {
-        info!("logs-path count: {}", &app.logs_path.len());
-        for path in &app.logs_path {
-            info!("log-path: {}", path.to_string_lossy());
+    match app.action {
+        Action::Draw(draw_arg) => {
+            if draw_arg.logs_path.is_empty() {
+                panic!("log paths is empty");
+            } else {
+                info!("logs-path count: {}", &draw_arg.logs_path.len());
+                for path in &draw_arg.logs_path {
+                    info!("log-path: {}", path.to_string_lossy());
+                }
+            }
+
+            let now = Instant::now();
+            let mut context = build_context(&now, draw_arg.logs_path, draw_arg.labels);
+            context.outdir = draw_arg.outdir;
+            std::fs::create_dir_all(&context.outdir).unwrap();
+            let ac = Arc::new(context);
+            let now = Arc::new(now);
+
+            let mut join_handles = vec![];
+
+            let ac0 = ac.clone();
+            let now0 = now.clone();
+            join_handles.push(thread::spawn(move || {
+                ac0.draw_time_cost();
+                info!("draw time cost {:?}", now0.elapsed());
+            }));
+
+            // let ac1 = ac.clone();
+            // let now1 = now.clone();
+            // join_handles.push(thread::spawn(move || {
+            //     ac1.draw_height_block_size();
+            //     info!("draw height block size {:?}", now1.elapsed());
+            // }));
+            //
+            // let ac2 = ac.clone();
+            // let now2 = now.clone();
+            // join_handles.push(thread::spawn(move || {
+            //     ac2.draw_epoch_average_block_size();
+            //     info!("draw epoch average block size {:?}", now2.elapsed());
+            // }));
+            //
+            // let ac3 = ac.clone();
+            // let now3 = now.clone();
+            // join_handles.push(thread::spawn(move || {
+            //     ac3.draw_height_cycles();
+            //     info!("draw height cycles {:?}", now3.elapsed());
+            // }));
+            //
+            // let ac4 = ac.clone();
+            // let now4 = now.clone();
+            // join_handles.push(thread::spawn(move || {
+            //     ac4.draw_epoch_cycles();
+            //     info!("draw epoch cycles {:?}", now4.elapsed());
+            // }));
+            //
+            // let ac5 = ac.clone();
+            // let now5 = now.clone();
+            // join_handles.push(thread::spawn(move || {
+            //     ac5.draw_height_txs_count();
+            //     info!("draw height txs count {:?}", now5.elapsed());
+            // }));
+            //
+            // let ac6 = ac.clone();
+            // let now6 = now.clone();
+            // join_handles.push(thread::spawn(move || {
+            //     ac6.draw_epoch_average_txs_count();
+            //     info!("draw epoch average txs count {:?}", now6.elapsed());
+            // }));
+
+            // join join_handles
+            for jh in join_handles {
+                jh.join().unwrap();
+            }
         }
-    }
+        Action::Analyse(analyse_arg) => {
+            let now = Instant::now();
+            let context =
+                build_context(&now, vec![analyse_arg.logs_path], vec!["label".to_string()]);
+            let mm = context.mm.get(0).unwrap();
+            let mut start_time = None;
+            let mut results = Vec::new();
+            mm.iter().for_each(|(height, v)| {
+                if start_time.is_none() {
+                    start_time = Some(v.timestamp);
+                    results.push((*height, v.timestamp))
+                }
+                if height % 100000 == 0 {
+                    results.push((*height, v.timestamp))
+                }
+            });
 
-    let now = Instant::now();
-    let ac = Arc::new(build_context(&now, app.logs_path, app.labels));
-    let now = Arc::new(now);
-
-    let mut join_handles = vec![];
-
-    let ac0 = ac.clone();
-    let now0 = now.clone();
-    join_handles.push(thread::spawn(move || {
-        ac0.draw_time_cost();
-        info!("draw time cost {:?}", now0.elapsed());
-    }));
-
-    // let ac1 = ac.clone();
-    // let now1 = now.clone();
-    // join_handles.push(thread::spawn(move || {
-    //     ac1.draw_height_block_size();
-    //     info!("draw height block size {:?}", now1.elapsed());
-    // }));
-    //
-    // let ac2 = ac.clone();
-    // let now2 = now.clone();
-    // join_handles.push(thread::spawn(move || {
-    //     ac2.draw_epoch_average_block_size();
-    //     info!("draw epoch average block size {:?}", now2.elapsed());
-    // }));
-    //
-    // let ac3 = ac.clone();
-    // let now3 = now.clone();
-    // join_handles.push(thread::spawn(move || {
-    //     ac3.draw_height_cycles();
-    //     info!("draw height cycles {:?}", now3.elapsed());
-    // }));
-    //
-    // let ac4 = ac.clone();
-    // let now4 = now.clone();
-    // join_handles.push(thread::spawn(move || {
-    //     ac4.draw_epoch_cycles();
-    //     info!("draw epoch cycles {:?}", now4.elapsed());
-    // }));
-    //
-    // let ac5 = ac.clone();
-    // let now5 = now.clone();
-    // join_handles.push(thread::spawn(move || {
-    //     ac5.draw_height_txs_count();
-    //     info!("draw height txs count {:?}", now5.elapsed());
-    // }));
-    //
-    // let ac6 = ac.clone();
-    // let now6 = now.clone();
-    // join_handles.push(thread::spawn(move || {
-    //     ac6.draw_epoch_average_txs_count();
-    //     info!("draw epoch average txs count {:?}", now6.elapsed());
-    // }));
-
-    // join join_handles
-    for jh in join_handles {
-        jh.join().unwrap();
+            let (_, mut previous_time) = results.first().unwrap();
+            results
+                .iter()
+                .skip(1)
+                .skip_while(|(height, timestamp)| height % analyse_arg.every_height != 0)
+                .for_each(|(height, timestamp)| {
+                    info!("height, {} {}", height, timestamp - previous_time);
+                    previous_time = *timestamp;
+                })
+        }
     }
 }
 
@@ -268,6 +332,7 @@ struct Context {
     epoch_mm0: Arc<BTreeMap<u64, EpochStatics>>,
     mm: Arc<Vec<BTreeMap<u64, LogStatics>>>,
     labels: Vec<String>,
+    outdir: PathBuf,
 }
 
 impl Context {
@@ -422,11 +487,15 @@ impl Context {
                     .map(|(k, v)| (v.timestamp, *k))
                     .collect();
                 let first = points.first().unwrap().0;
-                points.iter().map(|(k, v)| (*k - first, *v)).collect()
+                points
+                    .iter()
+                    .map(|(k, v)| (Duration::seconds((*k - first) as _), *v))
+                    .collect()
             })
             .collect();
-        draw_u64(
-            "img/tmp.png",
+        let outpath = self.outdir.join("tmp.png");
+        draw_duration(
+            outpath.to_str().unwrap(),
             "CKB Sync Status:(timestamp, height)",
             "timestamp(s)",
             "height",
@@ -693,6 +762,73 @@ fn parse_info_level_log(log_file: &str) -> BTreeMap<u64, LogStatics> {
         }
     }
     log_statics
+}
+
+fn draw_duration(
+    filename: &str,
+    chart_name: &str,
+    x_description: &str,
+    y_description: &str,
+    datas: &Vec<Vec<(Duration, u64)>>,
+    labels: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = BitMapBackend::new(filename, (1920, 1080)).into_drawing_area();
+    let (mut x_max, mut x_min, mut y_max, mut y_min) =
+        (Duration::min_value(), Duration::max_value(), 0, u64::MAX);
+    datas.iter().for_each(|data| {
+        let y_max0 = data.iter().map(|(_, v)| *v).max().unwrap();
+        let y_min0 = data.iter().map(|(_, v)| *v).min().unwrap();
+        y_max = max(y_max, y_max0);
+        y_min = min(y_min, y_min0);
+        let x_max0 = data.last().unwrap().0;
+        let x_min0 = data.first().unwrap().0;
+        x_max = max(x_max, x_max0);
+        x_min = min(x_min, x_min0);
+    });
+
+    root.fill(&WHITE)?;
+    root.margin(10_u32, 10_u32, 20_u32, 10_u32);
+
+    let x_range = (x_min..x_max).step(Duration::minutes(10));
+    let mut chart = ChartBuilder::on(&root)
+        .caption(chart_name, ("sans-serif", 100).into_font())
+        .x_label_area_size(50_u32)
+        .y_label_area_size(100_u32)
+        .build_cartesian_2d(x_range, y_min..y_max)?;
+
+    chart
+        .configure_mesh()
+        .x_label_formatter(&|x| format!("{:02}H:{:02}M", x.num_hours(), x.num_minutes() % 60))
+        .x_desc(x_description)
+        .y_desc(y_description)
+        .draw()?;
+
+    const COLORS: [RGBColor; 6] = [RED, GREEN, BLUE, BLACK, CYAN, MAGENTA];
+    for (i, data) in datas.iter().enumerate() {
+        let color = COLORS.get(i).unwrap();
+        chart
+            .draw_series(PointSeries::of_element(
+                data.iter().map(|v| (v.0, v.1)),
+                1,
+                color,
+                &|c, s, st| EmptyElement::at(c) + Circle::new((0, 0), s, st.filled()),
+            ))?
+            .label(labels.get(i).unwrap())
+            .legend(|(x, y)| {
+                let color = *color;
+                PathElement::new(vec![(x, y), (x + 20, y)], color)
+            });
+    }
+
+    chart
+        .configure_series_labels()
+        .border_style(&BLACK)
+        .background_style(&WHITE.mix(0.8))
+        .draw()?;
+
+    root.present().expect("unable write to file");
+
+    Ok(())
 }
 
 fn draw_u64(
